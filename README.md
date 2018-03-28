@@ -35,14 +35,15 @@ https://github.com/nd009/capstone/tree/master/dog_vs_cat
 - Keras 2.1.5
 
 ## 项目流程
-1. ref_data 映射文件；
+1. ref_data 映射数据；
 2. data_preprocess 数据清洗，使用三种模型预测异常值，每个模型约15分钟，产生 outliers_total；
-3. ref_data 重映射文件；
-4. single_model 分别实验 InceptionV3，Xception，InceptionResNetV2；
-5. single_model_fine_tune 微调 Xception 卷积层，每epoch约460s，共20个epochs约2.5小时；
-6. multi_model 模型融合；
-7. class_activation_map 生成特征图。
+3. ref_data 重映射、分割数据；
+4. gen_feature 生成特征向量，每个模型约10分钟；
+5. single_model 分别实验 InceptionV3，Xception，InceptionResNetV2；
+6. single_model_fine_tune 微调 Xception 卷积层，每epoch约460s，共20个epochs约2.5小时；
+7. multi_model 模型融合；
+8. class_activation_map 生成特征图。
 
-![cam1](https://github.com/crj0322/dog_vs_cat/tree/master/docs/cam1.png)
-![cam2](https://github.com/crj0322/dog_vs_cat/tree/master/docs/cam2.png)
-![cam3](https://github.com/crj0322/dog_vs_cat/tree/master/docs/cam3.png)
+![cam1](https://github.com/crj0322/dog_vs_cat/raw/master/docs/cam1.png)
+![cam2](https://github.com/crj0322/dog_vs_cat/raw/master/docs/cam2.png)
+![cam3](https://github.com/crj0322/dog_vs_cat/raw/master/docs/cam3.png)
