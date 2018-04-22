@@ -54,3 +54,8 @@ https://github.com/nd009/capstone/tree/master/dog_vs_cat
 ![cam1](https://github.com/crj0322/dog_vs_cat/raw/master/docs/cam1.png)
 ![cam2](https://github.com/crj0322/dog_vs_cat/raw/master/docs/cam2.png)
 ![cam3](https://github.com/crj0322/dog_vs_cat/raw/master/docs/cam3.png)
+
+## Detection
+### yolov3: Detection codes  
+- yolo_model.ipynb -------------------------------------------- build yolov3 model
+- todo: 1. yolo predict; 2. train yolo with dog cat data.
