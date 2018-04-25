@@ -57,5 +57,5 @@ https://github.com/nd009/capstone/tree/master/dog_vs_cat
 
 ## Detection
 ### yolov3: Detection codes  
-- yolo_model.ipynb -------------------------------------------- build yolov3 model
-- todo: 1. yolo predict; 2. train yolo with dog cat data.
+- yolo_model.ipynb -------------------------------------------- build yolov3 model and predict bboxes, steal codes from [HERE](https://github.com/qqwweee/keras-yolo3).
+- todo: train yolo with dog cat data.
