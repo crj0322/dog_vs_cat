@@ -1,7 +1,7 @@
 # Dogs vs Cats
-
-## Data
-[Dogs vs. Cats](https://www.kaggle.com/c/dogs-vs-cats-redux-kernels-edition)
+# Classification
+## Dataset
+[Dogs vs. Cats Redux: Kernels Edition](https://www.kaggle.com/c/dogs-vs-cats-redux-kernels-edition)
 
 ## Projects Requirements
 https://github.com/nd009/capstone/tree/master/dog_vs_cat
@@ -55,11 +55,16 @@ https://github.com/nd009/capstone/tree/master/dog_vs_cat
 ![cam2](https://github.com/crj0322/dog_vs_cat/raw/master/docs/cam2.png)
 ![cam3](https://github.com/crj0322/dog_vs_cat/raw/master/docs/cam3.png)
 
-## Detection
+# Detection
+## Dataset
+[The Oxford-IIIT Pet Dataset](http://www.robots.ox.ac.uk/~vgg/data/pets/)
+
+## File Catalog
 ### Dir: yolov3
 - yolo_model.ipynb: build darknet53 and yolov3 output layers with keras.
-- yolo_predict.ipynb: implemented prediction with numpy for easily understandin.
+- yolo_predict.ipynb: implement prediction with numpy for easily understanding.
 ![yolov3](https://github.com/crj0322/dog_vs_cat/raw/master/docs/fo4yolo.png)
-
+- utils.py: util functions.
+- yolo_train.ipynb: read batch images, transfer bbox min-max format values to yolo y format, build model for training with Oxford pet dataset, todo: complete loss function and train.
 - the model weights and draw bbox codes are stolen from [HERE](https://github.com/qqwweee/keras-yolo3).
-- todo: train yolo with dog cat data.
+- todo: (1)train yolo with dog cat data; (2)segmentation.
