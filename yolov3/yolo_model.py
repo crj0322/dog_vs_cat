@@ -54,11 +54,7 @@ def top_conv(x, filters, out_dim):
     
     return x, y
 
-def yolo_model(inputs, anchors, num_classes):
-    num_anchors = anchors.shape[0] // 3
-    # def my_init(shape, dtype=None):
-    #     return K.random_normal(shape, stddev=1e-4, dtype=dtype)
-
+def yolo_model(inputs, num_anchors, num_classes):
     darknet = Model(inputs=inputs, outputs=darknet53(inputs))
     x, y1 = top_conv(darknet.output, 1024, num_anchors*(num_classes+5))
     
@@ -71,9 +67,6 @@ def yolo_model(inputs, anchors, num_classes):
     x = UpSampling2D(2)(x)
     x = Concatenate()([x, darknet.layers[92].output])
     x, y3 = top_conv(x, 256, num_anchors*(num_classes+5))
-
-    # boxes = Lambda(feat_to_boxes, name='feat_to_boxes',
-    #     arguments={'anchors': anchors, 'num_classes': num_classes})([y1, y2, y3])
     
     return [y1, y2, y3]
 
@@ -110,7 +103,9 @@ def feat_to_boxes(feats, anchors, num_classes):
         boxes = K.reshape(boxes, [batch_size, -1, num_classes + 5])
         out_boxes.append(boxes)
 
-    return K.concatenate(out_boxes, axis=0)
+    out_boxes = K.concatenate(out_boxes, axis=1)
+
+    return out_boxes
 
 def yolo_loss(inputs, anchors, num_classes, ignore_threshold=0.5):
     y_pred = inputs[:3]
@@ -245,15 +240,9 @@ def box_iou(b1, b2):
     return iou
     
 def main():
-    # read anchors
-    with open('model/yolo_anchors.txt') as f:
-        anchors = f.readline()
-        anchors = [float(x) for x in anchors.split(',')]
-        anchors = np.array(anchors).reshape(-1, 2)
-
     # build model
     inputs = Input((416, 416, 3))
-    y1, y2, y3 = yolo_model(inputs, anchors, 80)
+    y1, y2, y3 = yolo_model(inputs, 3, 80)
     model = Model(inputs, [y1, y2, y3])
     model.load_weights('model/yolo.h5')
     base_model = Model(model.input, [model.layers[-4].output, model.layers[-5].output, model.layers[-6].output])

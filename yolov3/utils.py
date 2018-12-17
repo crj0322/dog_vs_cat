@@ -1,4 +1,4 @@
-from PIL import Image, ImageDraw, ImageFont
+import cv2 as cv
 import matplotlib.pyplot as plt
 import colorsys
 import random
@@ -7,6 +7,13 @@ import xml.etree.ElementTree as ET
 from tqdm import tqdm
 import os
 
+def read_anchors(filepath):
+    with open(filepath) as f:
+        anchors = f.readline()
+        anchors = [float(x) for x in anchors.split(',')]
+        anchors = np.array(anchors).reshape(-1, 2)
+
+    return anchors
 
 def box_iou(box1, box2):
     """
@@ -23,19 +30,23 @@ def box_iou(box1, box2):
 
 def letterbox_image(image, size):
     '''resize image with unchanged aspect ratio using padding'''
-    image_w, image_h = image.size
+    image_w, image_h = image.shape[:2]
     w, h = size
     new_w = int(image_w * min(w/image_w, h/image_h))
     new_h = int(image_h * min(w/image_w, h/image_h))
-    resized_image = image.resize((new_w,new_h), Image.BICUBIC)
+    resized_image = cv.resize(image, (new_w,new_h))
 
-    boxed_image = Image.new('RGB', size, (128,128,128))
-    boxed_image.paste(resized_image, ((w-new_w)//2,(h-new_h)//2))
+    pad_left = (w-new_w)//2
+    pad_top = (h-new_h)//2
+    pad_right = w - new_w - pad_left
+    pad_bottom = h - new_h - pad_top
+    boxed_image = cv.copyMakeBorder(resized_image, pad_top, pad_bottom, pad_left, pad_right,
+        cv.BORDER_CONSTANT, (128,128,128))
+    
     return boxed_image
 
 def draw_bbox(image, class_names, out_boxes, out_scores, out_classes):
-    # font = ImageFont.truetype(font='font/FiraMono-Medium.otf', size=np.floor(3e-2 * image.size[1] + 0.5).astype('int32'))
-    thickness = (image.size[0] + image.size[1]) // 300
+    thickness = (image.shape[0] + image.shape[1]) // 300
     
     # Generate colors for drawing bounding boxes.
     hsv_tuples = [(x / len(class_names), 1., 1.)
@@ -51,32 +62,27 @@ def draw_bbox(image, class_names, out_boxes, out_scores, out_classes):
         box = out_boxes[i]
         score = out_scores[i]
 
-        label = '{} {:.2f}'.format(predicted_class, score)
-        draw = ImageDraw.Draw(image)
-        label_size = draw.textsize(label)
-
-        left,top, right, bottom = box
+        # draw box
+        left, top, right, bottom = box
         top = max(0, np.floor(top + 0.5).astype('int32'))
         left = max(0, np.floor(left + 0.5).astype('int32'))
-        bottom = min(image.size[1], np.floor(bottom + 0.5).astype('int32'))
-        right = min(image.size[0], np.floor(right + 0.5).astype('int32'))
-        print(label, (left, top), (right, bottom))
-
+        bottom = min(image.shape[1], np.floor(bottom + 0.5).astype('int32'))
+        right = min(image.shape[0], np.floor(right + 0.5).astype('int32'))
+        # print(label, (left, top), (right, bottom))
+        cv.rectangle(image, (left, top), (right, bottom), colors[c], thickness=thickness)
+        
+        # draw label
+        label = '{} {:.2f}'.format(predicted_class, score)
+        label_size, base_line = cv.getTextSize(label, cv.FONT_HERSHEY_SIMPLEX, 0.3, 1)
         if top - label_size[1] >= 0:
-            text_origin = np.array([left, top - label_size[1]])
+            cv.rectangle(image, (left, top - label_size[1]), \
+                (left + label_size[0], top + base_line), colors[c], thickness=cv.FILLED)
+            cv.putText(image, label, (left, top), cv.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 0))
         else:
             text_origin = np.array([left, top + 1])
-
-        # My kingdom for a good redistributable image drawing library.
-        for i in range(thickness):
-            draw.rectangle(
-                [left + i, top + i, right - i, bottom - i],
-                outline=colors[c])
-        draw.rectangle(
-            [tuple(text_origin), tuple(text_origin + label_size)],
-            fill=colors[c])
-        draw.text(text_origin, label, fill=(0, 0, 0))
-        del draw
+            cv.rectangle(image, (left, top + 1), \
+                (left + label_size[0], top + base_line + label_size[1] + 1), colors[c], thickness=cv.FILLED)
+            cv.putText(image, label, (left, top + label_size[1] + 1), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0))
         
     plt.figure(figsize=(10,8))
     plt.imshow(image)
@@ -89,9 +95,10 @@ def read_image(file_list, image_path):
     """
     X = []
     for i, file in enumerate(tqdm(file_list)):
-        image = Image.open(image_path + file[:-4] + '.jpg')
+        image = cv.imread(image_path + file[:-4] + '.jpg')
+        image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
         # image = letterbox_image(image, (416, 416))
-        image = image.resize((416, 416),Image.ANTIALIAS)
+        image = cv.resize(image, (416, 416))
         image = np.array(image, dtype='uint8')
         image = np.expand_dims(image, 0)
         X.append(image)
