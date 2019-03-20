@@ -78,7 +78,8 @@ def data_generator(file_list, img_path, xml_path, class_dict, anchors,
             image = cv.imread(os.path.join(img_path, file_list[i] + '.jpg'))
             image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
             # image = letterbox_image(image, (416, 416))
-            image = cv.resize(image, (416, 416))
+            image = cv.resize(image, (416, 416)).astype(np.float32)
+            image /= 255.
             image = np.expand_dims(image, 0)
             X.append(image)
 
