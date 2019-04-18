@@ -211,7 +211,7 @@ def boxes_to_y(true_boxes, anchors, num_classes, image_wh):
         
         box_xy = boxes_xy[box_index]  # shape(2,)
         # box_wh = boxes_wh[box_index]/anchors[anchor_index]  # shape(2,)
-        box_wh = boxes_wh[box_index]/image_wh  # shape(2,)， range(0, 1)
+        box_wh = boxes_wh[box_index]/image_wh  # shape(2,), range(0, 1)
         
         #  fill in y_true.
         w = grid_index[layer_index][box_index, 0].astype('int32')
