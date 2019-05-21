@@ -7,17 +7,6 @@ from tqdm import tqdm
 from utils import read_anchors
 from data_gen import read_boxes
 
-flags = tf.app.flags
-
-flags.DEFINE_string('image_path', 'E:/data/The Oxford-IIIT Pet Dataset/images', 'Path to images (directory).')
-flags.DEFINE_string('xml_path', 'E:/data/The Oxford-IIIT Pet Dataset/annotations/xmls', 'Path to bounding box info.')
-flags.DEFINE_string('output_path', './data/train.record', 'Path to output tfrecord file.')
-flags.DEFINE_string('ancher_path', './model/pet_anchors.txt', 'Path to anchors info.')
-flags.DEFINE_integer('width', 416, 'Target image width')
-flags.DEFINE_integer('height', 416, 'Target image height')
-flags.DEFINE_integer('channels', 3, 'Input image channels')
-FLAGS = flags.FLAGS
-
 '''write tfrecord'''
 
 def _bytes_feature(value):
@@ -44,24 +33,18 @@ def _int64_list_feature(value):
     """Returns an int64_list from a bool / enum / int / uint."""
     return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
 
-def dense_to_sparse_value(a):
-    idx = np.nonzero(a)
-    values = a[idx]
+def dense_to_sparse_value(dense):
+    idx = np.nonzero(dense)
+    values = dense[idx]
     idx = np.concatenate([idx], axis=1).transpose()
-    sparse = tf.SparseTensorValue(idx, values, a.shape)
+    sparse = tf.sparse.SparseTensor(idx, values, dense.shape)
+    sparse = tf.io.serialize_sparse(sparse)
     return sparse
 
-def dense_to_sparse_string(dense_shape):
-    dense = tf.placeholder(tf.float32, dense_shape)
-    idx = tf.where(tf.not_equal(dense, 0))
-    sparse = tf.SparseTensor(idx, tf.gather_nd(dense, idx), tf.shape(dense, out_type=tf.int64))
-    sparse = tf.io.serialize_sparse(sparse)
-    return dense, sparse
-
-def create_tf_example(sess, image_file, xml_file, class_dict, anchors):
+def create_tf_example(image_file, dst_wh, xml_file, class_dict, anchors):
     image = cv.imread(image_file)
     raw_h, raw_w = image.shape[:2]
-    image = cv.resize(image, (FLAGS.width, FLAGS.height))
+    image = cv.resize(image, dst_wh)
     image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
     encoded_jpg = cv.imencode('.jpg', image)[1].tostring()
     filename = image_file.split(os.sep)[-1]
@@ -69,12 +52,11 @@ def create_tf_example(sess, image_file, xml_file, class_dict, anchors):
 
     y_true = read_boxes(xml_file, class_dict, anchors)
 
-    dense, sparse = dense_to_sparse_string([None, None, anchors.shape[0] // 3, 5 + len(class_dict)])
     y_sparse = []
     for y in y_true:
         y = np.squeeze(y, axis=0)
-        sst = sess.run(sparse, feed_dict={dense: y})
-        y_sparse.append(sst)
+        sst = dense_to_sparse_value(y)
+        y_sparse.append(sst.numpy())
     
     tf_example = tf.train.Example(
         features=tf.train.Features(feature={
@@ -89,27 +71,29 @@ def create_tf_example(sess, image_file, xml_file, class_dict, anchors):
     return tf_example
 
 
-def generate_tfrecord(file_list, image_path, xml_path, class_dict, anchors, output_path):
-    writer = tf.python_io.TFRecordWriter(output_path)
-    with tf.Session() as sess:
+def generate_tfrecord(file_list, image_path, dst_wh, xml_path, class_dict, anchors, output_path):
+    with tf.io.TFRecordWriter(output_path) as writer:
         for filepath in tqdm(file_list):
             filename = filepath.split('.')[0]
-            image_file = os.path.join(FLAGS.image_path, filename + '.jpg')
-            xml_file = os.path.join(FLAGS.xml_path, filename + '.xml')
-            tf_example = create_tf_example(sess, image_file, xml_file, class_dict, anchors)
+            image_file = os.path.join(image_path, filename + '.jpg')
+            xml_file = os.path.join(xml_path, filename + '.xml')
+            tf_example = create_tf_example(image_file, dst_wh, xml_file, class_dict, anchors)
             writer.write(tf_example.SerializeToString())
-        
-    writer.close()
     
 
-def main(_):
-    # write 
+def main():
+    # write
+    image_path =  'E:/data/The Oxford-IIIT Pet Dataset/images'
+    xml_path = 'E:/data/The Oxford-IIIT Pet Dataset/annotations/xmls'
+    output_path = './data/train.record'
+    ancher_path = './model/pet_anchors.txt'
     classes_name = {'cat': 0, 'dog': 1}
-    anchors = read_anchors(FLAGS.ancher_path)
-    file_list = os.listdir(FLAGS.xml_path)
-    generate_tfrecord(file_list, FLAGS.image_path, FLAGS.xml_path,
-        classes_name, anchors, FLAGS.output_path)
+    dst_wh = (416, 416)
+    anchors = read_anchors(ancher_path)
+    file_list = os.listdir(xml_path)
+    generate_tfrecord(file_list, image_path, dst_wh, xml_path,
+        classes_name, anchors, output_path)
     
     
 if __name__ == '__main__':
-    tf.app.run()
+    main()

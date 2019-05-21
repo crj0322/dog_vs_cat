@@ -4,14 +4,14 @@ import cv2 as cv
 
 def parse_fun(serialized_example, shape, class_num, anchor_num):
     # parse single example
-    features = tf.parse_single_example(serialized_example, features={
-        'image': tf.FixedLenFeature([], tf.string),
-        'raw_h': tf.FixedLenFeature([], tf.int64),
-        'raw_w': tf.FixedLenFeature([], tf.int64),
-        'class': tf.FixedLenFeature([], tf.int64),
-        'y1': tf.FixedLenFeature([3], tf.string),
-        'y2': tf.FixedLenFeature([3], tf.string),
-        'y3': tf.FixedLenFeature([3], tf.string)
+    features = tf.io.parse_single_example(serialized_example, features={
+        'image': tf.io.FixedLenFeature([], tf.string),
+        'raw_h': tf.io.FixedLenFeature([], tf.int64),
+        'raw_w': tf.io.FixedLenFeature([], tf.int64),
+        'class': tf.io.FixedLenFeature([], tf.int64),
+        'y1': tf.io.FixedLenFeature([3], tf.string),
+        'y2': tf.io.FixedLenFeature([3], tf.string),
+        'y3': tf.io.FixedLenFeature([3], tf.string)
     })
 
     raw_image = features['image']
@@ -44,30 +44,18 @@ def get_dataset(record_path, shape, class_num, anchor_num):
 def main():
     # test read
     dataset = get_dataset('./data/train.record', [416, 416, 3], 2, 3)
-    batch = dataset.batch(10).make_one_shot_iterator().get_next()
-    img, y1, y2, y3 = batch
-
-    sess = tf.InteractiveSession()
-    i = 1
-    while True:
-        try:
-            img, y1, y2, y3 = sess.run(batch)
-            y_true = [y1, y2, y3]
-            img = (img[0]*255).astype(np.uint8)
-        except tf.errors.OutOfRangeError:
-            print("End of dataset")
-            break
-        else:
-            cv.imshow('img', img)
-            for y in y_true:
-                idx = np.nonzero(y)
-                values = y[idx]
-                print('shape: ', y.shape)
-                print('value: ', values)
-                print('idx: ', idx)
-            cv.waitKey()
-        i+=1
-    
+    batch = dataset.batch(10)
+    for img, y1, y2, y3 in batch:
+        y_true = [y1.numpy(), y2.numpy(), y3.numpy()]
+        img = (img.numpy()[0]*255).astype(np.uint8)
+        cv.imshow('img', img)
+        for y in y_true:
+            idx = np.nonzero(y)
+            values = y[idx]
+            print('shape: ', y.shape)
+            print('value: ', values)
+            print('idx: ', idx)
+        cv.waitKey()
     
     
 if __name__ == '__main__':
