@@ -5,6 +5,11 @@ import random
 import numpy as np
 
 
+def read_names(filepath):
+    with open(filepath) as f:
+        classes = f.read().rstrip('\n').split('\n')
+    return classes
+
 def read_anchors(filepath):
     with open(filepath) as f:
         anchors = f.readline()
@@ -49,11 +54,10 @@ def draw_bbox(image, class_names, out_boxes, out_scores, out_classes):
 
         # draw box
         left, top, right, bottom = box
-        top = max(0, np.floor(top + 0.5).astype('int32'))
-        left = max(0, np.floor(left + 0.5).astype('int32'))
-        bottom = min(image.shape[1], np.floor(bottom + 0.5).astype('int32'))
-        right = min(image.shape[0], np.floor(right + 0.5).astype('int32'))
-        # print(label, (left, top), (right, bottom))
+        top = max(0, np.floor(top * image.shape[1] + 0.5).astype('int32'))
+        left = max(0, np.floor(left * image.shape[0] + 0.5).astype('int32'))
+        bottom = min(image.shape[1], np.floor(bottom * image.shape[1] + 0.5).astype('int32'))
+        right = min(image.shape[0], np.floor(right * image.shape[0] + 0.5).astype('int32'))
         cv.rectangle(image, (left, top), (right, bottom), colors[c], thickness=thickness)
         
         # draw label
