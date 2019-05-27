@@ -52,8 +52,7 @@ def top_conv(x, filters, out_dim):
     
     return x, y
 
-def yolo_v3(input_shape, num_anchors, num_classes):
-    inputs = Input(input_shape)
+def yolo_v3(inputs, num_anchors, num_classes):
     x_36, x_61, x = darknet53(inputs)
     x, y1 = top_conv(x, 1024, num_anchors*(num_classes+5))
     
@@ -67,79 +66,100 @@ def yolo_v3(input_shape, num_anchors, num_classes):
     x = Concatenate()([x, x_36])
     x, y3 = top_conv(x, 256, num_anchors*(num_classes+5))
     
-    return Model(inputs, [y1, y2, y3])
+    return y1, y2, y3
 
-def feat_to_boxes(feats, anchors, num_classes,
-    max_output_size_per_class, max_output_size, iou_threshold, score_threshold):
-    anchor_mask = [[6,7,8], [3,4,5], [0,1,2]]
-    num_anchors = len(anchor_mask)
-    input_wh = tf.constant([416, 416], dtype=feats[0].dtype)
-    batch_size = tf.shape(feats[0])[0]
+def feat_to_boxes(feats, anchors, num_classes, input_wh):
+    num_anchors = tf.shape(anchors)[0]
+    batch_size = tf.shape(feats)[0]
 
-    out_boxes = []
-    out_scores = []
+    # get anchor tensor
+    anchors_tensor = tf.reshape(anchors, [1, 1, 1, num_anchors, 2])
+    
+    # get grid of shape(h, w, anchor_num, 2)
+    grid_hw = tf.shape(feats)[1:3]
+    grid_y = tf.tile(tf.reshape(tf.range(grid_hw[0]), [-1, 1, 1, 1]), [1, grid_hw[1], 1, 1])
+    grid_x = tf.tile(tf.reshape(tf.range(grid_hw[1]), [1, -1, 1, 1]), [grid_hw[0], 1, 1, 1])
+    grid = tf.concat([grid_x, grid_y], axis=-1)
+    grid = tf.dtypes.cast(grid, feats.dtype)
+    
+    # get prediction values in range(0, 1)
+    feature = tf.reshape(feats, [-1, grid_hw[0], grid_hw[1], num_anchors, num_classes + 5])
+    box_xy = tf.math.sigmoid(feature[..., :2])
+    box_wh = tf.math.exp(feature[..., 2:4])
+    box_confidence = tf.math.sigmoid(feature[..., 4:5])
+    box_class_probs = tf.math.sigmoid(feature[..., 5:])
+    box_xy = (box_xy + grid) / tf.dtypes.cast(grid_hw[::-1], feature.dtype)
+    box_wh = box_wh * anchors_tensor / input_wh
 
-    # iterate along 3 layers.
-    for i in range(3):
-        # get anchor tensor
-        anchors_tensor = tf.reshape(tf.constant(anchors[anchor_mask[i]], dtype=feats[0].dtype), 
-            [1, 1, 1, num_anchors, 2])
+    # for nms
+    half_wh = box_wh / 2
+    box_minmax = tf.concat([box_xy - half_wh, box_xy + half_wh], axis=-1)
+    box_scores = box_confidence * box_class_probs
+    
+    box_minmax = tf.reshape(box_minmax, [batch_size, -1, 1, 4])
+    box_scores = tf.reshape(box_scores, [batch_size, -1, num_classes])
+
+    return box_minmax, box_scores
+
+class YoloV3():
+    def __init__(self):
+        self.num_anchors = 3
+        self.num_classes = 80
+        self.input_shape = (416, 416, 3)
+        self.anchor_mask = [[6,7,8], [3,4,5], [0,1,2]]
+        from utils import read_anchors
+        self.anchors = read_anchors('./model/yolo_anchors.txt')
+        self.max_output_size_per_class = 20
+        self.max_output_size = 100
+        self.iou_threshold = 0.5
+        self.score_threshold = 0.3
+        self.training = False
+
+        self.model = self.build_model()
         
-        # get grid of shape(h, w, anchor_num, 2)
-        grid_hw = tf.shape(feats[i])[1:3]
-        grid_y = tf.tile(tf.reshape(tf.range(grid_hw[0]), [-1, 1, 1, 1]), [1, grid_hw[1], 1, 1])
-        grid_x = tf.tile(tf.reshape(tf.range(grid_hw[1]), [1, -1, 1, 1]), [grid_hw[0], 1, 1, 1])
-        grid = tf.concat([grid_x, grid_y], axis=-1)
-        grid = tf.dtypes.cast(grid, feats[i].dtype)
-        
-        # get prediction values in range(0, 1)
-        feature = tf.reshape(feats[i], [-1, grid_hw[0], grid_hw[1], num_anchors, num_classes + 5])
-        box_xy = tf.math.sigmoid(feature[..., :2])
-        box_wh = tf.math.exp(feature[..., 2:4])
-        box_confidence = tf.math.sigmoid(feature[..., 4:5])
-        box_class_probs = tf.math.sigmoid(feature[..., 5:])
-        box_xy = (box_xy + grid) / tf.dtypes.cast(grid_hw[::-1], feature.dtype)
-        box_wh = box_wh * anchors_tensor / input_wh
+    def build_model(self):
+        inputs = Input(self.input_shape)
+        y1, y2, y3 = yolo_v3(inputs, self.num_anchors, self.num_classes)
+        if self.training:
+            return Model(inputs, [y1, y2, y3])
 
-        # for nms
-        box_minmax = tf.concat([box_xy - box_wh / 2, box_xy + box_wh / 2], axis=-1)
-        box_scores = box_confidence * box_class_probs
-        
-        box_minmax = tf.reshape(box_minmax, [batch_size, -1, 1, 4])
-        box_scores = tf.reshape(box_scores, [batch_size, -1, num_classes])
-        out_boxes.append(box_minmax)
-        out_scores.append(box_scores)
+        outputs = Lambda(self.get_boxes)([y1, y2, y3])
+        return Model(inputs, outputs)
+    
+    def get_boxes(self, inputs):
+        out_boxes = []
+        out_scores = []
+        num_classes = tf.constant(self.num_classes)
+        input_wh = tf.constant(self.input_shape[:2], dtype=inputs[0].dtype)
+        for i, feat in enumerate(inputs):
+            anchors = tf.constant(self.anchors[self.anchor_mask[i]], dtype=feat.dtype)
+            boxes, scores = feat_to_boxes(feat, anchors, num_classes, self.input_shape[:2])
+            out_boxes.append(boxes)
+            out_scores.append(scores)
+        out_boxes = tf.concat(out_boxes, axis=1)
+        out_scores = tf.concat(out_scores, axis=1)
 
-    # shape(batch, boxes_num, 4)
-    out_boxes = tf.concat(out_boxes, axis=1)
-    out_scores = tf.concat(out_scores, axis=1)
-
-    # nms
-    boxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
+        boxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
         out_boxes, out_scores,
-        max_output_size_per_class=max_output_size_per_class,
-        max_total_size=max_output_size,
-        iou_threshold=iou_threshold,
-        score_threshold=score_threshold
-    )
+        max_output_size_per_class=self.max_output_size_per_class,
+        max_total_size=self.max_output_size,
+        iou_threshold=self.iou_threshold,
+        score_threshold=self.score_threshold)
 
-    return boxes, scores, classes, valid_detections
+        return boxes, scores, classes, valid_detections
 
-# @tf.function
-def predict(img, yolo_model, anchors, num_classes, max_output_size_per_class=20,
-        max_output_size=100, iou_threshold=0.5, score_threshold=0.5):
-    img = tf.expand_dims(img, axis=0)
-    feats = yolo_model(img)
-    boxes, scores, classes, valid_detections = \
-        feat_to_boxes(feats, anchors, num_classes, 
-        max_output_size_per_class, max_output_size, iou_threshold, score_threshold)
+    def predict_img(self, img):
+        assert not self.training
+        img = np.expand_dims(img, axis=0)
+        boxes, scores, classes, valid_detections = \
+            self.model.predict(img)
 
-    box_num = valid_detections[0]
-    boxes = tf.squeeze(boxes, axis=0)[:box_num]
-    scores = tf.squeeze(scores, axis=0)[:box_num]
-    classes = tf.squeeze(classes, axis=0)[:box_num]
-    classes = tf.dtypes.cast(classes, 'int32')
-    return boxes, scores, classes
+        box_num = valid_detections[0]
+        boxes = np.squeeze(boxes, axis=0)[:box_num]
+        scores = np.squeeze(scores, axis=0)[:box_num]
+        classes = np.squeeze(classes, axis=0)[:box_num]
+        classes = classes.astype('int32')
+        return boxes, scores, classes
 
 def yolo_loss(inputs, anchors, num_classes, ignore_threshold=0.5):
     y_pred = inputs[:3]
