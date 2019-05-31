@@ -29,10 +29,10 @@ def parse_fun(serialized_example, shape, class_num, anchor_num):
         y = tf.io.deserialize_many_sparse(y, dtype=tf.float32)
         y = tf.sparse.to_dense(y)
         # y = tf.squeeze(y, axis=0)
-        y = tf.reshape(y, [shape[0]//scale[i], shape[1]//scale[i], anchor_num, 5+class_num])
+        y = tf.reshape(y, [shape[0]//scale[i], shape[1]//scale[i], anchor_num*(5+class_num)])
         y_true.append(y)
 
-    return [image, *y_true]
+    return image, tuple(y_true)
 
 def get_dataset(record_path, shape, class_num, anchor_num):
     """Get a tensorflow record file."""
@@ -45,16 +45,16 @@ def main():
     # test read
     dataset = get_dataset('./data/train.record', [416, 416, 3], 2, 3)
     batch = dataset.batch(10)
-    for img, y1, y2, y3 in batch:
-        y_true = [y1.numpy(), y2.numpy(), y3.numpy()]
+    for img, y_true in batch:
+        y_true = [y.numpy() for y in y_true]
         img = (img.numpy()[0]*255).astype(np.uint8)
         cv.imshow('img', img)
         for y in y_true:
             idx = np.nonzero(y)
             values = y[idx]
             print('shape: ', y.shape)
-            print('value: ', values)
-            print('idx: ', idx)
+            # print('value: ', values)
+            # print('idx: ', idx)
         cv.waitKey()
     
     

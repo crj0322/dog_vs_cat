@@ -73,13 +73,13 @@ def feat_to_boxes(feats, anchors, num_classes, input_wh):
     batch_size = tf.shape(feats)[0]
 
     # get anchor tensor
-    anchors_tensor = tf.reshape(anchors, [1, 1, 1, num_anchors, 2])
+    anchors_tensor = tf.reshape(tf.constant(anchors, dtype=feats.dtype),
+        [1, 1, 1, num_anchors, 2])
     
-    # get grid of shape(h, w, anchor_num, 2)
+    # get grid of shape(h, w, 1, 2)
     grid_hw = tf.shape(feats)[1:3]
-    grid_y = tf.tile(tf.reshape(tf.range(grid_hw[0]), [-1, 1, 1, 1]), [1, grid_hw[1], 1, 1])
-    grid_x = tf.tile(tf.reshape(tf.range(grid_hw[1]), [1, -1, 1, 1]), [grid_hw[0], 1, 1, 1])
-    grid = tf.concat([grid_x, grid_y], axis=-1)
+    grid_x, grid_y = tf.meshgrid(tf.range(grid_hw[1]), tf.range(grid_hw[0]))
+    grid = tf.expand_dims(tf.stack([grid_x, grid_y], axis=-1), axis=2)
     grid = tf.dtypes.cast(grid, feats.dtype)
     
     # get prediction values in range(0, 1)
@@ -101,155 +101,84 @@ def feat_to_boxes(feats, anchors, num_classes, input_wh):
 
     return box_minmax, box_scores
 
-class YoloV3():
-    def __init__(self):
-        self.num_anchors = 3
-        self.num_classes = 80
-        self.input_shape = (416, 416, 3)
-        self.anchor_mask = [[6,7,8], [3,4,5], [0,1,2]]
-        from utils import read_anchors
-        self.anchors = read_anchors('./model/yolo_anchors.txt')
-        self.max_output_size_per_class = 20
-        self.max_output_size = 100
-        self.iou_threshold = 0.5
-        self.score_threshold = 0.3
-        self.training = False
+def layer_loss(y_true, y_pred, anchors, num_classes, input_wh, ignore_threshold):
+    num_anchors = tf.shape(anchors)[0]
+    batch_size = tf.shape(y_pred)[0]
 
-        self.model = self.build_model()
-        
-    def build_model(self):
-        inputs = Input(self.input_shape)
-        y1, y2, y3 = yolo_v3(inputs, self.num_anchors, self.num_classes)
-        if self.training:
-            return Model(inputs, [y1, y2, y3])
-
-        outputs = Lambda(self.get_boxes)([y1, y2, y3])
-        return Model(inputs, outputs)
+    # get anchor tensor
+    anchors_tensor = tf.reshape(tf.constant(anchors, dtype=y_pred.dtype),
+        [1, 1, 1, num_anchors, 2])
     
-    def get_boxes(self, inputs):
-        out_boxes = []
-        out_scores = []
-        num_classes = tf.constant(self.num_classes)
-        input_wh = tf.constant(self.input_shape[:2], dtype=inputs[0].dtype)
-        for i, feat in enumerate(inputs):
-            anchors = tf.constant(self.anchors[self.anchor_mask[i]], dtype=feat.dtype)
-            boxes, scores = feat_to_boxes(feat, anchors, num_classes, self.input_shape[:2])
-            out_boxes.append(boxes)
-            out_scores.append(scores)
-        out_boxes = tf.concat(out_boxes, axis=1)
-        out_scores = tf.concat(out_scores, axis=1)
+    # get grid of shape(h, w, 1, 2)
+    grid_hw = tf.shape(y_pred)[1:3]
+    grid_x, grid_y = tf.meshgrid(tf.range(grid_hw[1]), tf.range(grid_hw[0]))
+    grid = tf.expand_dims(tf.stack([grid_x, grid_y], axis=-1), axis=2)
+    grid = tf.dtypes.cast(grid, y_pred.dtype)
 
-        boxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
-        out_boxes, out_scores,
-        max_output_size_per_class=self.max_output_size_per_class,
-        max_total_size=self.max_output_size,
-        iou_threshold=self.iou_threshold,
-        score_threshold=self.score_threshold)
+    # get prediction values
+    feature = tf.reshape(y_pred, [-1, grid_hw[0], grid_hw[1], num_anchors, num_classes + 5])
+    raw_box_xy = feature[..., :2]
+    raw_box_wh = feature[..., 2:4]
+    raw_box_confidence = feature[..., 4:5]
+    raw_box_class_probs = feature[..., 5:]
+    box_xy = tf.math.sigmoid(raw_box_xy)
+    box_wh = tf.math.exp(raw_box_wh)
+    grid_wh = tf.dtypes.cast(grid_hw[::-1], feature.dtype)
+    box_xy = (box_xy + grid) / grid_wh
+    box_wh = box_wh * anchors_tensor / input_wh
 
-        return boxes, scores, classes, valid_detections
-
-    def predict_img(self, img):
-        assert not self.training
-        img = np.expand_dims(img, axis=0)
-        boxes, scores, classes, valid_detections = \
-            self.model.predict(img)
-
-        box_num = valid_detections[0]
-        boxes = np.squeeze(boxes, axis=0)[:box_num]
-        scores = np.squeeze(scores, axis=0)[:box_num]
-        classes = np.squeeze(classes, axis=0)[:box_num]
-        classes = classes.astype('int32')
-        return boxes, scores, classes
-
-def yolo_loss(inputs, anchors, num_classes, ignore_threshold=0.5):
-    y_pred = inputs[:3]
-    y_true = inputs[3:]
-    anchor_mask = [[6,7,8], [3,4,5], [0,1,2]]
-    num_anchors = len(anchor_mask)
-    input_wh = tf.constant([416, 416], y_pred[0].dtype)
-    batch_size = tf.shape(y_pred[0])[0]
-
-    loss = 0
-    xy_loss = 0
-    wh_loss = 0
-    iou_loss = 0
-    bg_loss = 0
-    class_loss = 0
+    # get true values
+    y_true = tf.reshape(y_true, [-1, grid_hw[0], grid_hw[1], num_anchors, num_classes + 5])
+    ture_xy = y_true[..., :2]
+    true_wh = y_true[..., 2:4]
+    true_confidence = y_true[..., 4:5]
+    true_class_probs = y_true[..., 5:]
+    raw_true_xy = ture_xy * grid_wh - grid
+    raw_true_wh = tf.math.log(y_true[..., 2:4] / anchors_tensor * input_wh)
+    raw_true_wh = tf.where(tf.math.is_inf(raw_true_wh), tf.zeros_like(raw_true_wh), raw_true_wh)
     
-    # iterate along 3 layers.
-    for i in range(3):
-        # get anchor tensor
-        anchors_tensor = tf.reshape(tf.constant(anchors[anchor_mask[i]], dtype=y_pred[0].dtype), 
-            [1, 1, 1, num_anchors, 2])
-        
-        # get grid of shape(h, w, anchor_num, 2)
-        grid_hw = tf.shape(y_pred[i])[1:3]
-        grid_y = tf.tile(tf.reshape(tf.range(grid_hw[0]), [-1, 1, 1, 1]), [1, grid_hw[1], 1, 1])
-        grid_x = tf.tile(tf.reshape(tf.range(grid_hw[1]), [1, -1, 1, 1]), [grid_hw[0], 1, 1, 1])
-        grid = tf.concat([grid_x, grid_y], axis=-1)
-        grid = tf.dtypes.cast(grid, y_pred[i].dtype)
-        
-        # get prediction values
-        feature = tf.reshape(y_pred[i], [-1, grid_hw[0], grid_hw[1], num_anchors, num_classes + 5])
-        raw_box_xy = feature[..., :2]
-        raw_box_wh = feature[..., 2:4]
-        raw_box_confidence = feature[..., 4:5]
-        raw_box_class_probs = feature[..., 5:]
-        box_xy = tf.math.sigmoid(raw_box_xy)
-        box_wh = tf.math.exp(raw_box_wh)
-        grid_wh = tf.dtypes.cast(grid_hw[::-1], feature.dtype)
-        box_xy = (box_xy + grid) / grid_wh
-        box_wh = box_wh * anchors_tensor / input_wh
-        
-        # get true values
-        ture_xy = y_true[i][..., :2]
-        true_wh = y_true[i][..., 2:4]
-        true_confidence = y_true[i][..., 4:5]
-        true_class_probs = y_true[i][..., 5:]
-        raw_true_xy = ture_xy * grid_wh - grid
-        raw_true_wh = tf.math.log(y_true[i][..., 2:4] / anchors_tensor * input_wh)
-        raw_true_wh = tf.where(true_confidence, raw_true_wh, tf.zeros_like(raw_true_wh)) # avoid log(0)=-inf
-        
-        # calculate loss
+    # calculate loss
 
-        # scale cordinate loss
-        lambda_cord = 2 - y_true[i][...,2:3]*y_true[i][...,3:4]
-        
-        # shape(batch, grid_h, grid_w, num_anchors, 2)
-        tmp_xy_loss = lambda_cord * true_confidence * tf.math.square(raw_box_xy - raw_true_xy)
-        tmp_wh_loss = 0.5 * lambda_cord * true_confidence * tf.math.square(raw_box_wh - raw_true_wh)
-        
-        # bg loss ignore iou more than iou_threshold
-        # Find ignore mask, iterate over each of batch
-        pred_box = tf.concat((box_xy, box_wh), axis=-1)
-        ignore_mask = tf.TensorArray(y_true[0].dtype, size=1, dynamic_size=True)
-        object_mask_bool = tf.dtypes.cast(true_confidence, 'bool')
-        for j in tf.range(batch_size):
-            true_box = tf.boolean_mask(y_true[i][j,...,0:4], object_mask_bool[j,...,0])
-            iou = box_iou(pred_box[j], true_box)
-            best_iou = tf.math.reduce_max(iou, axis=-1)
-            ignore_mask = ignore_mask.write(j, tf.dtypes.cast(best_iou<ignore_threshold, true_box.dtypes))
-
-        ignore_mask = ignore_mask.stack()
-        ignore_mask = tf.expand_dims(ignore_mask, -1)
-        
-        iou_crossentropy = tf.losses.binary_crossentropy(true_confidence, raw_box_confidence, from_logits=True)
-        tmp_iou_loss = true_confidence * iou_crossentropy
-        tmp_bg_loss = ignore_mask * (1-true_confidence) * iou_crossentropy
-        
-        tmp_class_loss = true_confidence * tf.losses.binary_crossentropy(true_class_probs, raw_box_class_probs, from_logits=True)
-        
-        box_count = tf.math.maximum(tf.math.reduce_sum(true_confidence), 1)
-        bg_count = tf.math.maximum(tf.math.reduce_sum(ignore_mask*(1-true_confidence)), 1)
-        xy_loss += tf.math.reduce_sum(tmp_xy_loss)/box_count
-        wh_loss += tf.math.reduce_sum(tmp_wh_loss)/box_count
-        iou_loss += tf.math.reduce_sum(tmp_iou_loss)/box_count
-        bg_loss += tf.math.reduce_sum(tmp_bg_loss)/bg_count
-        class_loss += tf.math.reduce_sum(tmp_class_loss)/box_count
-
-    loss = xy_loss + wh_loss + iou_loss + bg_loss + class_loss
+    # scale cordinate loss
+    lambda_cord = 2 - y_true[...,2:3] * y_true[...,3:4]
     
-    return loss
+    # shape(batch, grid_h, grid_w, num_anchors, 2)
+    xy_loss = lambda_cord * true_confidence * tf.math.square(raw_box_xy - raw_true_xy)
+    wh_loss = 0.5 * lambda_cord * true_confidence * tf.math.square(raw_box_wh - raw_true_wh)
+    
+    # bg loss ignore iou more than iou_threshold
+    # Find ignore mask, iterate over each of batch
+    pred_box = tf.concat((box_xy, box_wh), axis=-1)
+    ignore_mask = tf.TensorArray(y_true[0].dtype, size=1, dynamic_size=True)
+    object_mask_bool = tf.dtypes.cast(true_confidence, 'bool')
+    def loop_body(b, ignore_mask):
+        true_box = tf.boolean_mask(y_true[b,...,0:4], object_mask_bool[b,...,0])
+        iou = box_iou(pred_box[b], true_box)
+        best_iou = tf.math.reduce_max(iou, axis=-1)
+        ignore_mask = ignore_mask.write(b, tf.dtypes.cast(best_iou<ignore_threshold, true_box.dtype))
+        return b+1, ignore_mask
+    _, ignore_mask = tf.while_loop(lambda b,*args: b<batch_size, loop_body, [0, ignore_mask])
+
+    ignore_mask = ignore_mask.stack()
+    ignore_mask = tf.expand_dims(ignore_mask, -1)
+    
+    iou_crossentropy = tf.losses.binary_crossentropy(true_confidence, raw_box_confidence, from_logits=True)
+    iou_crossentropy = tf.expand_dims(iou_crossentropy, axis=-1)
+    iou_loss = true_confidence * iou_crossentropy
+    bg_loss = ignore_mask * (1 - true_confidence) * iou_crossentropy
+    
+    class_loss = tf.losses.binary_crossentropy(true_class_probs, raw_box_class_probs, from_logits=True)
+    class_loss = true_confidence * tf.expand_dims(class_loss, axis=-1)
+
+    box_count = tf.math.maximum(tf.math.reduce_sum(true_confidence), 1)
+    bg_count = tf.math.maximum(tf.math.reduce_sum(ignore_mask * (1 - true_confidence)), 1)
+    xy_loss = tf.math.reduce_sum(xy_loss)/box_count
+    wh_loss = tf.math.reduce_sum(wh_loss)/box_count
+    iou_loss = tf.math.reduce_sum(iou_loss)/box_count
+    bg_loss = tf.math.reduce_sum(bg_loss)/bg_count
+    class_loss = tf.math.reduce_sum(class_loss)/box_count
+
+    return xy_loss + wh_loss + iou_loss + bg_loss + class_loss
 
 def box_iou(b1, b2):
     '''Return iou tensor
@@ -287,13 +216,96 @@ def box_iou(b1, b2):
     iou = intersect_area / (b1_area + b2_area - intersect_area)
 
     return iou
+
+class YoloV3():
+    def __init__(self, input_shape, 
+        num_classes, 
+        anchors,
+        training,
+        num_anchors=3, 
+        anchor_mask=[[6,7,8], [3,4,5], [0,1,2]]):
+        # model parameters
+        self.input_shape = input_shape
+        self.num_classes = num_classes
+        self.num_anchors = num_anchors
+        self.anchor_mask = anchor_mask
+        self.anchors = anchors
+
+        # nms parameters
+        self.max_output_size_per_class = 20
+        self.max_output_size = 100
+        self.iou_threshold = 0.5
+        self.score_threshold = 0.3
+
+        # training parameters
+        self.ignore_threshold = 0.5
+        self.training = training
+
+        self.model = self.build_model()
+        
+    def build_model(self):
+        inputs = Input(self.input_shape)
+        y1, y2, y3 = yolo_v3(inputs, self.num_anchors, self.num_classes)
+        if self.training:
+            return Model(inputs, [y1, y2, y3])
+
+        outputs = Lambda(self.get_boxes)([y1, y2, y3])
+        return Model(inputs, outputs)
+    
+    def get_boxes(self, inputs):
+        out_boxes = []
+        out_scores = []
+
+        # iterate along out layers.
+        for i, feat in enumerate(inputs):
+            boxes, scores = feat_to_boxes(feat, 
+                self.anchors[self.anchor_mask[i]], self.num_classes, self.input_shape[:2])
+            out_boxes.append(boxes)
+            out_scores.append(scores)
+        out_boxes = tf.concat(out_boxes, axis=1)
+        out_scores = tf.concat(out_scores, axis=1)
+
+        boxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
+        out_boxes, out_scores,
+        max_output_size_per_class=self.max_output_size_per_class,
+        max_total_size=self.max_output_size,
+        iou_threshold=self.iou_threshold,
+        score_threshold=self.score_threshold)
+
+        return boxes, scores, classes, valid_detections
+
+    def yolo_loss(self, i):
+        return lambda y_true, y_pred: layer_loss(y_true, y_pred, 
+            self.anchors[self.anchor_mask[i]], self.num_classes, self.input_shape[:2], self.ignore_threshold)
+
+    def predict_img(self, img):
+        assert not self.training
+        img = tf.expand_dims(img, axis=0)
+        boxes, scores, classes, valid_detections = \
+            self.model(img)
+
+        box_num = valid_detections[0]
+        boxes = tf.squeeze(boxes, axis=0)[:box_num]
+        scores = tf.squeeze(scores, axis=0)[:box_num]
+        classes = tf.squeeze(classes, axis=0)[:box_num]
+        classes = tf.dtypes.cast(classes, 'int32')
+        # classes = classes.astype('int32')
+        return boxes.numpy(), scores.numpy(), classes.numpy()
+
     
 def main():
     # build model
-    model = yolo_v3((416, 416, 3), 3, 80)
-    model.summary()
-    model.load_weights('model/yolo.h5')
-    base_model = Model(model.input, [model.layers[-4].output, model.layers[-5].output, model.layers[-6].output])
+    from utils import read_anchors
+    anchors = read_anchors('./model/yolo_anchors.txt')
+    yolov3 = YoloV3(input_shape=(416, 416, 3), 
+        num_classes=80,
+        anchors=anchors,
+        training=True
+        )
+    yolov3.model.summary()
+    yolov3.model.load_weights('model/yolo.h5')
+    base_model = Model(yolov3.model.input,
+        [yolov3.model.layers[-4].output, yolov3.model.layers[-5].output, yolov3.model.layers[-6].output])
     base_model.save('model/yolo_base.h5')
 
 if __name__ == '__main__':

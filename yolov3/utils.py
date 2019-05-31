@@ -35,6 +35,25 @@ def letterbox_image(image, size):
     
     return boxed_image
 
+def calc_crop_size(src, target_size=(300, 300)):
+    rows, cols = src
+    WHRatio = target_size[1]/float(target_size[0])
+    if cols/float(rows) > WHRatio:
+        cropSize = rows
+    else:
+        cropSize = cols
+    
+    return cropSize
+
+def squar_crop(img, cropSize):
+    rows, cols = img.shape[:2]
+    row_start = (rows - cropSize)//2
+    row_end = row_start + cropSize
+    col_start = (cols - cropSize)//2
+    col_end = col_start + cropSize
+
+    return img[row_start:row_end, col_start:col_end, :]
+
 def draw_bbox(image, class_names, out_boxes, out_scores, out_classes):
     thickness = (image.shape[0] + image.shape[1]) // 300
     
