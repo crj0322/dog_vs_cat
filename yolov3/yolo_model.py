@@ -1,70 +1,79 @@
 import tensorflow as tf
 from tensorflow.python.keras.layers import Input, Conv2D, Add, ZeroPadding2D, UpSampling2D, Concatenate, Lambda
 from tensorflow.python.keras.layers.advanced_activations import LeakyReLU
-from tensorflow.python.keras.layers.normalization import BatchNormalization
 from tensorflow.python.keras.models import Model
 from tensorflow.python.keras.regularizers import l2
 import numpy as np
 
 
-def conv_unit(x, filters, kernels, padding='same', strides=1):
+class BatchNormalization(tf.keras.layers.BatchNormalization):
+    """
+    Make trainable=False freeze BN for real
+    """
+    def call(self, x, training=False):
+        if training is None:
+            training = tf.constant(False)
+        training = tf.logical_and(training, self.trainable)
+        return super().call(x, training)
+
+def conv_unit(x, filters, kernels, training, padding='same', strides=1):
     x = Conv2D(filters, kernels,
                padding=padding,
                strides=strides,
                use_bias=False,
                kernel_regularizer=l2(5e-4))(x)
-    x = BatchNormalization()(x)
+    x = BatchNormalization()(x, training=training)
     x = LeakyReLU(alpha=0.1)(x)
     
     return x
 
-def residual_block(inputs, filters, n):
+def residual_block(inputs, filters, n, training):
     x = ZeroPadding2D(((1, 0),(1, 0)))(inputs)
-    x = conv_unit(x, filters, (3, 3), padding='valid', strides=2)
+    x = conv_unit(x, filters, (3, 3), training, padding='valid', strides=2)
     for i in range(n):
-        y = conv_unit(x, filters//2, (1, 1))
-        y = conv_unit(y, filters, (3, 3))
+        y = conv_unit(x, filters//2, (1, 1), training)
+        y = conv_unit(y, filters, (3, 3), training)
         x = Add()([x, y])
 
     return x
 
-def darknet53(inputs):
-    x = conv_unit(inputs, 32, (3, 3))
-    x = residual_block(x, 64, 1)
-    x = residual_block(x, 128, 2)
-    x = x_36 = residual_block(x, 256, 8)
-    x = x_61 = residual_block(x, 512, 8)
-    x = residual_block(x, 1024, 4)
+def darknet53(inputs, training):
+    x = conv_unit(inputs, 32, (3, 3), training)
+    x = residual_block(x, 64, 1, training)
+    x = residual_block(x, 128, 2, training)
+    x = x_36 = residual_block(x, 256, 8, training)
+    x = x_61 = residual_block(x, 512, 8, training)
+    x = residual_block(x, 1024, 4, training)
     
     return x_36, x_61, x
 
-def top_conv(x, filters, out_dim):
-    x = conv_unit(x, filters//2, (1, 1))
-    x = conv_unit(x, filters, (3, 3))
-    x = conv_unit(x, filters//2, (1, 1))
-    x = conv_unit(x, filters, (3, 3))
-    x = conv_unit(x, filters//2, (1, 1))
+def top_conv(x, filters, out_dim, training):
+    x = conv_unit(x, filters//2, (1, 1), training)
+    x = conv_unit(x, filters, (3, 3), training)
+    x = conv_unit(x, filters//2, (1, 1), training)
+    x = conv_unit(x, filters, (3, 3), training)
+    x = conv_unit(x, filters//2, (1, 1), training)
     
-    y = conv_unit(x, filters, (3, 3))
+    y = conv_unit(x, filters, (3, 3), training)
     y = Conv2D(out_dim, (1, 1),
                padding='same',
                kernel_regularizer=l2(5e-4))(y)
     
     return x, y
 
-def yolo_v3(inputs, num_anchors, num_classes):
-    x_36, x_61, x = darknet53(inputs)
-    x, y1 = top_conv(x, 1024, num_anchors*(num_classes+5))
+def yolo_v3(inputs, num_anchors, num_classes, training):
+    x_36, x_61, x = darknet53(inputs, training)
+    x, y1 = top_conv(x, 1024, num_anchors*(num_classes+5), training)
     
-    x = conv_unit(x, 256, (1, 1))
+    x = conv_unit(x, 256, (1, 1), training)
     x = UpSampling2D(2)(x)
     x = Concatenate()([x, x_61])
-    x, y2 = top_conv(x, 512, num_anchors*(num_classes+5))
+    x, y2 = top_conv(x, 512, num_anchors*(num_classes+5), training)
     
-    x = conv_unit(x, 128, (1, 1))
+    x = conv_unit(x, 128, (1, 1), training)
     x = UpSampling2D(2)(x)
     x = Concatenate()([x, x_36])
-    x, y3 = top_conv(x, 256, num_anchors*(num_classes+5))
+    x, y3 = top_conv(x, 256, num_anchors*(num_classes+5), training)
     
     return y1, y2, y3
 
@@ -245,7 +254,7 @@ class YoloV3():
         
     def build_model(self):
         inputs = Input(self.input_shape)
-        y1, y2, y3 = yolo_v3(inputs, self.num_anchors, self.num_classes)
+        y1, y2, y3 = yolo_v3(inputs, self.num_anchors, self.num_classes, self.training)
         if self.training:
             return Model(inputs, [y1, y2, y3])
 
@@ -278,8 +287,8 @@ class YoloV3():
         return lambda y_true, y_pred: layer_loss(y_true, y_pred, 
             self.anchors[self.anchor_mask[i]], self.num_classes, self.input_shape[:2], self.ignore_threshold)
 
+    @tf.function
     def predict_img(self, img):
-        assert not self.training
         img = tf.expand_dims(img, axis=0)
         boxes, scores, classes, valid_detections = \
             self.model(img)
@@ -289,8 +298,7 @@ class YoloV3():
         scores = tf.squeeze(scores, axis=0)[:box_num]
         classes = tf.squeeze(classes, axis=0)[:box_num]
         classes = tf.dtypes.cast(classes, 'int32')
-        # classes = classes.astype('int32')
-        return boxes.numpy(), scores.numpy(), classes.numpy()
+        return boxes, scores, classes
 
     
 def main():
