@@ -77,26 +77,24 @@ def yolo_v3(inputs, num_anchors, num_classes, training):
     
     return y1, y2, y3
 
-def feat_to_boxes(feats, anchors, num_classes, input_wh):
-    num_anchors = tf.shape(anchors)[0]
-    batch_size = tf.shape(feats)[0]
-
+def feat_to_boxes(feats, num_anchors, anchors, num_classes, input_wh):
     # get anchor tensor
     anchors_tensor = tf.reshape(tf.constant(anchors, dtype=feats.dtype),
-        [1, 1, 1, num_anchors, 2])
+        [1, 1, num_anchors, 2])
     
     # get grid of shape(h, w, 1, 2)
-    grid_hw = tf.shape(feats)[1:3]
+    grid_hw = feats.get_shape()[1:3]
     grid_x, grid_y = tf.meshgrid(tf.range(grid_hw[1]), tf.range(grid_hw[0]))
     grid = tf.expand_dims(tf.stack([grid_x, grid_y], axis=-1), axis=2)
     grid = tf.dtypes.cast(grid, feats.dtype)
     
     # get prediction values in range(0, 1)
-    feature = tf.reshape(feats, [-1, grid_hw[0], grid_hw[1], num_anchors, num_classes + 5])
-    box_xy = tf.math.sigmoid(feature[..., :2])
-    box_wh = tf.math.exp(feature[..., 2:4])
-    box_confidence = tf.math.sigmoid(feature[..., 4:5])
-    box_class_probs = tf.math.sigmoid(feature[..., 5:])
+    # batch size == 1, ignore batch dim because tflite not support tensor dim > 4
+    feature = tf.reshape(feats, [grid_hw[0], grid_hw[1], num_anchors, num_classes + 5])
+    box_xy = tf.math.sigmoid(feature[:, :, :, :2])
+    box_wh = tf.math.exp(feature[:, :, :, 2:4])
+    box_confidence = tf.math.sigmoid(feature[:, :, :, 4:5])
+    box_class_probs = tf.math.sigmoid(feature[:, :, :, 5:])
     box_xy = (box_xy + grid) / tf.dtypes.cast(grid_hw[::-1], feature.dtype)
     box_wh = box_wh * anchors_tensor / input_wh
 
@@ -105,8 +103,8 @@ def feat_to_boxes(feats, anchors, num_classes, input_wh):
     box_minmax = tf.concat([box_xy - half_wh, box_xy + half_wh], axis=-1)
     box_scores = box_confidence * box_class_probs
     
-    box_minmax = tf.reshape(box_minmax, [batch_size, -1, 1, 4])
-    box_scores = tf.reshape(box_scores, [batch_size, -1, num_classes])
+    box_minmax = tf.reshape(box_minmax, [-1, 4])
+    box_scores = tf.reshape(box_scores, [-1, num_classes])
 
     return box_minmax, box_scores
 
@@ -201,7 +199,7 @@ def box_iou(b1, b2):
     '''
 
     # Expand dim to apply broadcasting.
-    b1 = tf.expand_dims(b1, -2)
+    b1 = tf.expand_dims(b1, axis=-2)
     b1_xy = b1[..., :2]
     b1_wh = b1[..., 2:4]
     b1_wh_half = b1_wh/2.
@@ -267,21 +265,14 @@ class YoloV3():
 
         # iterate along out layers.
         for i, feat in enumerate(inputs):
-            boxes, scores = feat_to_boxes(feat, 
+            boxes, scores = feat_to_boxes(feat, self.num_anchors,
                 self.anchors[self.anchor_mask[i]], self.num_classes, self.input_shape[:2])
             out_boxes.append(boxes)
             out_scores.append(scores)
-        out_boxes = tf.concat(out_boxes, axis=1)
-        out_scores = tf.concat(out_scores, axis=1)
+        out_boxes = tf.concat(out_boxes, axis=0)
+        out_scores = tf.concat(out_scores, axis=0)
 
-        boxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
-        out_boxes, out_scores,
-        max_output_size_per_class=self.max_output_size_per_class,
-        max_total_size=self.max_output_size,
-        iou_threshold=self.iou_threshold,
-        score_threshold=self.score_threshold)
-
-        return boxes, scores, classes, valid_detections
+        return out_boxes, out_scores
 
     def yolo_loss(self, i):
         return lambda y_true, y_pred: layer_loss(y_true, y_pred, 
@@ -289,9 +280,19 @@ class YoloV3():
 
     @tf.function
     def predict_img(self, img):
+        img = tf.dtypes.cast(img, 'float32')
         img = tf.expand_dims(img, axis=0)
+        img /= 255.
+        out_boxes, out_scores = self.model(img)
+        out_boxes = tf.reshape(out_boxes, [1, -1, 1, 4])
+        out_scores = tf.reshape(out_scores, [1, -1, self.num_classes])
         boxes, scores, classes, valid_detections = \
-            self.model(img)
+            tf.image.combined_non_max_suppression(
+            out_boxes, out_scores,
+            max_output_size_per_class=self.max_output_size_per_class,
+            max_total_size=self.max_output_size,
+            iou_threshold=self.iou_threshold,
+            score_threshold=self.score_threshold)
 
         box_num = valid_detections[0]
         boxes = tf.squeeze(boxes, axis=0)[:box_num]
@@ -308,13 +309,20 @@ def main():
     yolov3 = YoloV3(input_shape=(416, 416, 3), 
         num_classes=80,
         anchors=anchors,
-        training=True
+        training=False
         )
     yolov3.model.summary()
     yolov3.model.load_weights('model/yolo.h5')
-    base_model = Model(yolov3.model.input,
-        [yolov3.model.layers[-4].output, yolov3.model.layers[-5].output, yolov3.model.layers[-6].output])
-    base_model.save('model/yolo_base.h5')
+
+    # base_model = Model(yolov3.model.input,
+    #     [yolov3.model.layers[-4].output, yolov3.model.layers[-5].output, yolov3.model.layers[-6].output])
+    # base_model.save('model/yolo_base.h5')
+
+    # Convert to tflite.
+    converter = tf.lite.TFLiteConverter.from_keras_model(yolov3.model)
+    converter.optimizations = [tf.lite.Optimize.OPTIMIZE_FOR_SIZE]
+    tflite_model = converter.convert()
+    open("model/yolov3.tflite","wb").write(tflite_model)
 
 if __name__ == '__main__':
     main()
