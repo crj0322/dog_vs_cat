@@ -1,8 +1,4 @@
 import tensorflow as tf
-from tensorflow.python.keras.layers import Input, Conv2D, Add, ZeroPadding2D, UpSampling2D, Concatenate, Lambda
-from tensorflow.python.keras.layers.advanced_activations import LeakyReLU
-from tensorflow.python.keras.models import Model
-from tensorflow.python.keras.regularizers import l2
 import numpy as np
 
 
@@ -17,23 +13,23 @@ class BatchNormalization(tf.keras.layers.BatchNormalization):
         return super().call(x, training)
 
 def conv_unit(x, filters, kernels, training, padding='same', strides=1):
-    x = Conv2D(filters, kernels,
+    x = tf.keras.layers.Conv2D(filters, kernels,
                padding=padding,
                strides=strides,
                use_bias=False,
-               kernel_regularizer=l2(5e-4))(x)
+               kernel_regularizer=tf.keras.regularizers.l2(5e-4))(x)
     x = BatchNormalization()(x, training=training)
-    x = LeakyReLU(alpha=0.1)(x)
+    x = tf.keras.layers.LeakyReLU(alpha=0.1)(x)
     
     return x
 
 def residual_block(inputs, filters, n, training):
-    x = ZeroPadding2D(((1, 0),(1, 0)))(inputs)
+    x = tf.keras.layers.ZeroPadding2D(((1, 0),(1, 0)))(inputs)
     x = conv_unit(x, filters, (3, 3), training, padding='valid', strides=2)
     for i in range(n):
         y = conv_unit(x, filters//2, (1, 1), training)
         y = conv_unit(y, filters, (3, 3), training)
-        x = Add()([x, y])
+        x = tf.keras.layers.Add()([x, y])
 
     return x
 
@@ -47,6 +43,23 @@ def darknet53(inputs, training):
     
     return x_36, x_61, x
 
+def darknet_tiny(inputs, training):
+    x = conv_unit(inputs, 16, (3, 3), training)
+    x = tf.keras.layers.MaxPool2D((2, 2), (2, 2), 'same')(x)
+    x = conv_unit(x, 32, (3, 3), training)
+    x = tf.keras.layers.MaxPool2D((2, 2), (2, 2), 'same')(x)
+    x = conv_unit(x, 64, (3, 3), training)
+    x = tf.keras.layers.MaxPool2D((2, 2), (2, 2), 'same')(x)
+    x = conv_unit(x, 128, (3, 3), training)
+    x = tf.keras.layers.MaxPool2D((2, 2), (2, 2), 'same')(x)
+    x = x_8 = conv_unit(x, 256, (3, 3), training)
+    x = tf.keras.layers.MaxPool2D((2, 2), (2, 2), 'same')(x)
+    x = conv_unit(x, 512, (3, 3), training)
+    x = tf.keras.layers.MaxPool2D((2, 2), (1, 1), 'same')(x)
+    x = conv_unit(x, 1024, (3, 3), training)
+
+    return x_8, x
+
 def top_conv(x, filters, out_dim, training):
     x = conv_unit(x, filters//2, (1, 1), training)
     x = conv_unit(x, filters, (3, 3), training)
@@ -55,9 +68,9 @@ def top_conv(x, filters, out_dim, training):
     x = conv_unit(x, filters//2, (1, 1), training)
     
     y = conv_unit(x, filters, (3, 3), training)
-    y = Conv2D(out_dim, (1, 1),
+    y = tf.keras.layers.Conv2D(out_dim, (1, 1),
                padding='same',
-               kernel_regularizer=l2(5e-4))(y)
+               kernel_regularizer=tf.keras.regularizers.l2(5e-4))(y)
     
     return x, y
 
@@ -66,16 +79,35 @@ def yolo_v3(inputs, num_anchors, num_classes, training):
     x, y1 = top_conv(x, 1024, num_anchors*(num_classes+5), training)
     
     x = conv_unit(x, 256, (1, 1), training)
-    x = UpSampling2D(2)(x)
-    x = Concatenate()([x, x_61])
+    x = tf.keras.layers.UpSampling2D(2)(x)
+    x = tf.keras.layers.Concatenate()([x, x_61])
     x, y2 = top_conv(x, 512, num_anchors*(num_classes+5), training)
     
     x = conv_unit(x, 128, (1, 1), training)
-    x = UpSampling2D(2)(x)
-    x = Concatenate()([x, x_36])
+    x = tf.keras.layers.UpSampling2D(2)(x)
+    x = tf.keras.layers.Concatenate()([x, x_36])
     x, y3 = top_conv(x, 256, num_anchors*(num_classes+5), training)
     
-    return y1, y2, y3
+    return [y1, y2, y3]
+
+def tiny_yolo_v3(inputs, num_anchors, num_classes, training):
+    x1, x = darknet_tiny(inputs, training)
+    x = x2 = conv_unit(x, 256, (1, 1), training)
+
+    x = conv_unit(x, 512, (3, 3), training)
+    x = y1 = tf.keras.layers.Conv2D(num_anchors*(num_classes+5), (1, 1),
+            padding='same',
+            kernel_regularizer=tf.keras.regularizers.l2(5e-4))(x)
+
+    x = conv_unit(x2, 128, (1, 1), training)
+    x = tf.keras.layers.UpSampling2D(2)(x)
+    x = tf.keras.layers.Concatenate()([x1, x])
+    x = conv_unit(x, 256, (3, 3), training)
+    y2 = tf.keras.layers.Conv2D(num_anchors*(num_classes+5), (1, 1),
+            padding='same',
+            kernel_regularizer=tf.keras.regularizers.l2(5e-4))(x)
+
+    return [y1, y2]
 
 def feat_to_boxes(feats, num_anchors, anchors, num_classes, input_wh):
     # get anchor tensor
@@ -229,14 +261,19 @@ class YoloV3():
         num_classes, 
         anchors,
         training,
-        num_anchors=3, 
-        anchor_mask=[[6,7,8], [3,4,5], [0,1,2]]):
+        num_anchors=3,
+        tiny=False):
         # model parameters
         self.input_shape = input_shape
         self.num_classes = num_classes
         self.num_anchors = num_anchors
-        self.anchor_mask = anchor_mask
         self.anchors = anchors
+        if tiny:
+            self.anchor_mask = [[3,4,5], [0,1,2]]
+            self._model_func = tiny_yolo_v3
+        else:
+            self.anchor_mask = [[6,7,8], [3,4,5], [0,1,2]]
+            self._model_func = yolo_v3
 
         # nms parameters
         self.max_output_size_per_class = 20
@@ -251,13 +288,13 @@ class YoloV3():
         self.model = self.build_model()
         
     def build_model(self):
-        inputs = Input(self.input_shape)
-        y1, y2, y3 = yolo_v3(inputs, self.num_anchors, self.num_classes, self.training)
+        inputs = tf.keras.Input(self.input_shape)
+        outputs = self._model_func(inputs, self.num_anchors, self.num_classes, self.training)
         if self.training:
-            return Model(inputs, [y1, y2, y3])
+            return tf.keras.Model(inputs, outputs)
 
-        outputs = Lambda(self.get_boxes)([y1, y2, y3])
-        return Model(inputs, outputs)
+        outputs = tf.keras.layers.Lambda(self.get_boxes)(outputs)
+        return tf.keras.Model(inputs, outputs)
     
     def get_boxes(self, inputs):
         out_boxes = []
@@ -305,16 +342,17 @@ class YoloV3():
 def main():
     # build model
     from utils import read_anchors
-    anchors = read_anchors('./model/yolo_anchors.txt')
+    anchors = read_anchors('./model/tiny_yolo_anchors.txt')
     yolov3 = YoloV3(input_shape=(416, 416, 3), 
         num_classes=80,
         anchors=anchors,
-        training=False
+        training=False,
+        tiny=True
         )
     yolov3.model.summary()
-    yolov3.model.load_weights('model/yolo.h5')
+    yolov3.model.load_weights('model/yolo-tiny.h5')
 
-    # base_model = Model(yolov3.model.input,
+    # base_model = tf.keras.Model(yolov3.model.input,
     #     [yolov3.model.layers[-4].output, yolov3.model.layers[-5].output, yolov3.model.layers[-6].output])
     # base_model.save('model/yolo_base.h5')
 
@@ -322,7 +360,7 @@ def main():
     converter = tf.lite.TFLiteConverter.from_keras_model(yolov3.model)
     converter.optimizations = [tf.lite.Optimize.OPTIMIZE_FOR_SIZE]
     tflite_model = converter.convert()
-    open("model/yolov3.tflite","wb").write(tflite_model)
+    open("model/tiny_yolov3.tflite","wb").write(tflite_model)
 
 if __name__ == '__main__':
     main()

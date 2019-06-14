@@ -73,18 +73,30 @@ def detect_video(predict_func, video_path, class_name, input_size, output_path="
     cv.destroyAllWindows()
 
 # load model
-class_name = read_names('model/coco_names.txt')
-anchors = read_anchors('./model/yolo_anchors.txt')
+test_video = True
+tiny_model = True
+class_name_file = 'model/coco_names.txt'
+if tiny_model:
+    anchor_file = './model/tiny_yolo_anchors.txt'
+    weights_file = 'model/yolo-tiny.h5'
+else:
+    anchor_file = './model/yolo_anchors.txt'
+    weights_file = 'model/yolo.h5'
+
+class_name = read_names(class_name_file)
+anchors = read_anchors(anchor_file)
 yolov3 = YoloV3(input_shape=(416, 416, 3), 
         num_classes=len(class_name),
         anchors=anchors,
-        training=False
+        training=False,
+        tiny=tiny_model
         )
-yolov3.model.load_weights('model/yolo.h5')
+yolov3.model.load_weights(weights_file)
 
-# test img
-# detect_img(yolov3.predict_img, 'Fallout4-1024x576.jpg', class_name, yolov3.input_shape[:2])
-
-# test video
-video_path = 'E:\\data\\180301_16_B_LunarYearsParade_29.mp4'
-detect_video(yolov3.predict_img, video_path, class_name, yolov3.input_shape[:2])
+if not test_video:
+    # test img
+    detect_img(yolov3.predict_img, 'Fallout4-1024x576.jpg', class_name, yolov3.input_shape[:2])
+else:
+    # test video
+    video_path = 'E:\\data\\180301_03_A_CausewayBay_06.mp4'
+    detect_video(yolov3.predict_img, video_path, class_name, yolov3.input_shape[:2])

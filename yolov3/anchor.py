@@ -63,13 +63,14 @@ def main():
     
     # cluster
     from sklearn.cluster import KMeans
-    cluster = KMeans(n_clusters=9, random_state=9, verbose=0)
+    # cluster = KMeans(n_clusters=9, random_state=9, verbose=0)
+    cluster = KMeans(n_clusters=6, random_state=6, verbose=0)
     y_pred = cluster.fit_predict(X)
     centers = cluster.cluster_centers_.astype(np.int32)
     centers = centers[np.argsort(centers[:,0]*centers[:,1])]
     print(centers)
 
-    fo = open("model/pet_anchors.txt", "w")
+    fo = open("model/tiny_pet_anchors.txt", "w")
     m, n = centers.shape
     for i in range(m):
         for j in range(n):
