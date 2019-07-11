@@ -43,7 +43,7 @@ def shuffle_split(file_list, split_rate=0.1, seed=None):
     return train_list, test_list
 
 def data_generator(file_list, img_path, xml_path, class_dict, anchors,
-    batch_size=32, shuffle=True, loop=True):
+    num_anchors=3, batch_size=32, shuffle=True, loop=True):
     """
     Arguments:
         file_list: file names.
@@ -52,6 +52,7 @@ def data_generator(file_list, img_path, xml_path, class_dict, anchors,
         class_dict: dict like {'cat': 0, 'dog': 1}.
         anchors: anchor priors.
     """
+    num_layers = anchors.shape[0] // num_anchors
     file_index = list(range(len(file_list)))
     if shuffle:
         np.random.shuffle(file_index)
@@ -70,9 +71,7 @@ def data_generator(file_list, img_path, xml_path, class_dict, anchors,
         start = end
 
         X = []
-        y1 = []
-        y2 = []
-        y3 = []
+        y_list = [[] for i in range(num_layers)]
         for i in batch_index:
             # generate X
             image = cv.imread(os.path.join(img_path, file_list[i] + '.jpg'))
@@ -86,15 +85,14 @@ def data_generator(file_list, img_path, xml_path, class_dict, anchors,
             # generate y
             y_true = read_boxes(os.path.join(xml_path, file_list[i] + '.xml'),
                 class_dict, anchors)
-            y1.append(y_true[0])
-            y2.append(y_true[1])
-            y3.append(y_true[2])
+
+            for j in range(num_layers):
+                y_list[j].append(y_true[j])
         
         X = np.concatenate(X, axis=0).astype(np.float32)/255.
-        y1 = np.concatenate(y1, axis=0)
-        y2 = np.concatenate(y2, axis=0)
-        y3 = np.concatenate(y3, axis=0)
-        yield [X, y1, y2, y3], np.zeros(batch_size)
+        for j in range(num_layers):
+            y_list[j] = np.concatenate(y_list[j], axis=0)
+        yield X, y_list
 
 def read_boxes(file_path, class_dict, anchors):
     """
@@ -152,7 +150,7 @@ def read_boxes(file_path, class_dict, anchors):
     
     return y_true
 
-def boxes_to_y(true_boxes, anchors, num_classes, image_wh):
+def boxes_to_y(true_boxes, anchors, num_classes, image_wh, num_anchors=3):
     """
     transfer true boxes to yolo y format.
     Arguments:
@@ -167,7 +165,7 @@ def boxes_to_y(true_boxes, anchors, num_classes, image_wh):
                 shape(grid w, grid h, num_anchors, 5+num_classes),
                 box xywh info normalize to (0, 1).
     """
-    num_anchors = anchors.shape[0] // 3
+    num_layers = anchors.shape[0] // num_anchors
     box_class = true_boxes[:, 4].astype(np.int32)
     xymin, xymax = true_boxes[:, 0:2], true_boxes[:, 2:4]
     
@@ -181,10 +179,11 @@ def boxes_to_y(true_boxes, anchors, num_classes, image_wh):
     boxes_xy = boxes_xy/image_wh
     
     # grid shape
-    grid_wh = [input_size//32, input_size//16, input_size//8]  # [[13, 13], [26, 26], [52, 52]]
-    grid_boxes_xy = [boxes_xy * grid_wh[i] for i in range(3)]  # to grid scale, range(0, grid_wh).
-    grid_index = [np.floor(grid_boxes_xy[i]) for i in range(3)]
-    # boxes_xy = [(boxes_xy[i] - grid_index[i]) for i in range(3)]  # size respect to one grid, range(0, 1).
+    # e.g. [input_size//32, input_size//16, input_size//8] -> [[13, 13], [26, 26], [52, 52]]
+    grid_wh = [input_size//(2**(5 - i)) for i in range(num_layers)]
+    grid_boxes_xy = [boxes_xy * grid_wh[i] for i in range(num_layers)]  # to grid scale, range(0, grid_wh).
+    grid_index = [np.floor(grid_boxes_xy[i]) for i in range(num_layers)]
+    # boxes_xy = [(boxes_xy[i] - grid_index[i]) for i in range(num_layers)]  # size respect to one grid, range(0, 1).
     
     # true size of xy min max cordinates relative to grid left top corner.
     anchor_xymax = anchors/2
@@ -194,7 +193,7 @@ def boxes_to_y(true_boxes, anchors, num_classes, image_wh):
     
     # create y_true.
     y_true = [np.zeros((1, grid_wh[i][1], grid_wh[i][0], num_anchors, 5+num_classes),
-        dtype='float32') for i in range(3)]
+        dtype='float32') for i in range(num_layers)]
     
     # iterate on each box
     num_boxes = true_boxes.shape[0]
@@ -206,8 +205,8 @@ def boxes_to_y(true_boxes, anchors, num_classes, image_wh):
         
         # select the best anchor
         anchor_index = np.argmax(iou)
-        layer_index = 2 - anchor_index//3
-        layer_anchor_index = anchor_index % 3
+        layer_index = num_layers - 1 - anchor_index//num_anchors
+        layer_anchor_index = anchor_index % num_anchors
         
         box_xy = boxes_xy[box_index]  # shape(2,)
         # box_wh = boxes_wh[box_index]/anchors[anchor_index]  # shape(2,)
@@ -226,7 +225,7 @@ def boxes_to_y(true_boxes, anchors, num_classes, image_wh):
 def main():
     classes_name = {'cat': 0, 'dog': 1}
     from utils import read_anchors
-    anchors = read_anchors('model/pet_anchors.txt')
+    anchors = read_anchors('model/tiny_pet_anchors.txt')
     xml_path = 'E:/data/The Oxford-IIIT Pet Dataset/annotations/xmls'
     image_path = 'E:/data/The Oxford-IIIT Pet Dataset/images/'
     file_list = os.listdir(xml_path)
@@ -252,8 +251,10 @@ def main():
     # test generator
     batch_gen = data_generator(test_list, image_path, xml_path, classes_name, anchors, loop=False)
     while True:
-        batch = next(batch_gen)[0]
-        print(batch[0].shape, batch[1].shape, batch[2].shape, batch[3].shape)
+        X, y_list = next(batch_gen)
+        print(X.shape)
+        for y in y_list:
+            print(y.shape, end='\t')
         os.system('pause')
 
 if __name__ == '__main__':

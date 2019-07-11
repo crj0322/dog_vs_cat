@@ -350,7 +350,7 @@ def main():
     yolov3 = YoloV3(input_shape=(416, 416, 3), 
         num_classes=80,
         anchors=anchors,
-        training=False,
+        training=True,
         tiny=True
         )
     yolov3.model.summary()
@@ -359,12 +359,15 @@ def main():
     # base_model = tf.keras.Model(yolov3.model.input,
     #     [yolov3.model.layers[-4].output, yolov3.model.layers[-5].output, yolov3.model.layers[-6].output])
     # base_model.save('model/yolo_base.h5')
+    base_model = tf.keras.Model(yolov3.model.input,
+        [yolov3.model.layers[-3].output, yolov3.model.layers[-4].output])
+    base_model.save('model/tiny_yolo_base.h5')
 
     # Convert to tflite.
-    converter = tf.lite.TFLiteConverter.from_keras_model(yolov3.model)
-    converter.optimizations = [tf.lite.Optimize.OPTIMIZE_FOR_SIZE]
-    tflite_model = converter.convert()
-    open("model/tiny_yolov3.tflite","wb").write(tflite_model)
+    # converter = tf.lite.TFLiteConverter.from_keras_model(yolov3.model)
+    # converter.optimizations = [tf.lite.Optimize.OPTIMIZE_FOR_SIZE]
+    # tflite_model = converter.convert()
+    # open("model/tiny_yolov3.tflite","wb").write(tflite_model)
 
 if __name__ == '__main__':
     main()
