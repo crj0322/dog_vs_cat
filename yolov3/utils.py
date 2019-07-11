@@ -1,5 +1,4 @@
 import cv2 as cv
-import matplotlib.pyplot as plt
 import colorsys
 import random
 import numpy as np
@@ -93,3 +92,17 @@ def draw_bbox(image, class_names, out_boxes, out_scores, out_classes, colors):
             cv.rectangle(image, (left, top + 1), \
                 (left + label_size[0], top + base_line + label_size[1] + 1), colors[c], thickness=cv.FILLED)
             cv.putText(image, label, (left, top + label_size[1] + 1), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0))
+
+def box_iou(box1, box2):
+    """
+    Arguments:
+        box1/box2: xy cordinates of left-top and right-bottom corners, shape(?, 4)
+    """
+    w1 = box1[:, 2] - box1[:, 0]
+    h1 = box1[:, 3] - box1[:, 1]
+    w2 = box2[:, 2] - box2[:, 0]
+    h2 = box2[:, 3] - box2[:, 1]
+    cross_w = np.maximum(0, np.minimum(box1[:, 2], box2[:, 2]) - np.maximum(box1[:, 0], box2[:, 0]))
+    cross_h = np.maximum(0, np.minimum(box1[:, 3], box2[:, 3]) - np.maximum(box1[:, 1], box2[:, 1]))
+    return cross_w*cross_h/(w1*h1 + w2*h2 - cross_w*cross_h)
+    

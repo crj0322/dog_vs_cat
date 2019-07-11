@@ -110,19 +110,21 @@ def tiny_yolo_v3(inputs, num_anchors, num_classes, training):
     return [y1, y2]
 
 def feat_to_boxes(feats, num_anchors, anchors, num_classes, input_wh):
+    batch_size = tf.shape(feats)[0]
+
     # get anchor tensor
     anchors_tensor = tf.reshape(tf.constant(anchors, dtype=feats.dtype),
         [1, 1, num_anchors, 2])
     
-    # get grid of shape(h, w, 1, 2)
+    # get grid of shape(1, h*w, 1, 2)
     grid_hw = feats.get_shape()[1:3]
-    grid_x, grid_y = tf.meshgrid(tf.range(grid_hw[1]), tf.range(grid_hw[0]))
-    grid = tf.expand_dims(tf.stack([grid_x, grid_y], axis=-1), axis=2)
-    grid = tf.dtypes.cast(grid, feats.dtype)
+    h, w = grid_hw
+    grid_x, grid_y = tf.meshgrid(tf.range(w), tf.range(h))
+    grid = tf.expand_dims(tf.stack([grid_x, grid_y], axis=2), axis=2)
+    grid = tf.dtypes.cast(tf.reshape(grid, (1, h*w, 1, 2)), feats.dtype)
     
     # get prediction values in range(0, 1)
-    # batch size == 1, ignore batch dim because tflite not support tensor dim > 4
-    feature = tf.reshape(feats, [grid_hw[0], grid_hw[1], num_anchors, num_classes + 5])
+    feature = tf.reshape(feats, [batch_size, h*w, num_anchors, num_classes + 5])
     box_xy = tf.math.sigmoid(feature[:, :, :, :2])
     box_wh = tf.math.exp(feature[:, :, :, 2:4])
     box_confidence = tf.math.sigmoid(feature[:, :, :, 4:5])
@@ -130,15 +132,12 @@ def feat_to_boxes(feats, num_anchors, anchors, num_classes, input_wh):
     box_xy = (box_xy + grid) / tf.dtypes.cast(grid_hw[::-1], feature.dtype)
     box_wh = box_wh * anchors_tensor / input_wh
 
-    # for nms
-    half_wh = box_wh / 2
-    box_minmax = tf.concat([box_xy - half_wh, box_xy + half_wh], axis=-1)
+    # outputs
     box_scores = box_confidence * box_class_probs
-    
-    box_minmax = tf.reshape(box_minmax, [-1, 4])
-    box_scores = tf.reshape(box_scores, [-1, num_classes])
+    out_tensor = tf.concat([box_xy, box_wh, box_scores], axis=-1)
+    out_tensor = tf.reshape(out_tensor, [batch_size, -1, 4 + num_classes])
 
-    return box_minmax, box_scores
+    return out_tensor
 
 def layer_loss(y_true, y_pred, anchors, num_classes, input_wh, ignore_threshold):
     num_anchors = tf.shape(anchors)[0]
@@ -297,19 +296,16 @@ class YoloV3():
         return tf.keras.Model(inputs, outputs)
     
     def get_boxes(self, inputs):
-        out_boxes = []
-        out_scores = []
+        outputs = []
 
         # iterate along out layers.
         for i, feat in enumerate(inputs):
-            boxes, scores = feat_to_boxes(feat, self.num_anchors,
+            out_tensor = feat_to_boxes(feat, self.num_anchors,
                 self.anchors[self.anchor_mask[i]], self.num_classes, self.input_shape[:2])
-            out_boxes.append(boxes)
-            out_scores.append(scores)
-        out_boxes = tf.concat(out_boxes, axis=0)
-        out_scores = tf.concat(out_scores, axis=0)
+            outputs.append(out_tensor)
+        outputs = tf.concat(outputs, axis=1)
 
-        return out_boxes, out_scores
+        return outputs
 
     def yolo_loss(self, i):
         return lambda y_true, y_pred: layer_loss(y_true, y_pred, 
@@ -320,7 +316,15 @@ class YoloV3():
         img = tf.dtypes.cast(img, 'float32')
         img = tf.expand_dims(img, axis=0)
         img /= 255.
-        out_boxes, out_scores = self.model(img)
+        outputs = self.model(img)
+        out_boxes, out_scores = outputs[:, :, :4], outputs[:, :, 4:]
+
+        # xywh to xy min max
+        box_xy = out_boxes[:, :, :2]
+        box_wh = out_boxes[:, :, 2:]
+        half_wh = box_wh / 2
+        out_boxes = tf.concat([box_xy - half_wh, box_xy + half_wh], axis=-1)
+
         out_boxes = tf.reshape(out_boxes, [1, -1, 1, 4])
         out_scores = tf.reshape(out_scores, [1, -1, self.num_classes])
         boxes, scores, classes, valid_detections = \
